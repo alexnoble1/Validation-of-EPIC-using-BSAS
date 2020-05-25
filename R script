@@ -1,0 +1,205 @@
+library(edgeR)
+library(AnnotationDbi)
+library(org.Mm.eg.db)
+library(here)
+library(readxl)
+
+?options
+bigger = options()$max.print + 20000
+options("max.print" = bigger)
+
+targets <- read_excel(("targets.xlsx"), sheet = "Sheet1") # ,stringsAsFactors=FALSE
+targets
+Group <- factor(paste(targets$cannabis,sep="_"))
+targets <- cbind(targets,Group=Group)
+#group <- factor(targets$cannabis)
+#Sample <- row.names(targets)
+
+Sample <- list.files("cov1")
+files <- paste0(("cov1//"),Sample)
+
+Sample <- list.files("COV")
+Sample
+files <- paste0(("COV//"),Sample)
+files
+
+#####add in methylated and unmethylated to look at count data
+
+for (i in 1:77) {  # i<-1
+  yall <- read.table(files[i], sep= ",", header=TRUE)
+  ynew<- NULL
+  ynew$Chromosome <- yall$Chromosome
+  ynew$Region <- yall$Region
+  ynew$Region1 <- yall$Region
+  ynew$methylationlevel <-yall$Methylation.level
+  ynew$Methylated <- yall$Methylated.coverage
+  ynew$unmethylated <- yall$Total.coverage- yall$Methylated.coverage
+  
+  ynew<- as.data.frame(ynew)
+  filename<- paste0("cov1//", Sample[i])
+  print(ynew)
+  write.table(ynew, file=filename, col.names=FALSE, row.names = FALSE, sep="\t")
+}
+
+
+## keep <- rep(TRUE, nrow(yall))
+## Chr <- as.character(yall$genes$Chr)
+## keep[ grep("random",Chr) ] <- FALSE
+## keep[ grep("chrUn",Chr) ] <- FALSE
+## keep[Chr=="chrY"] <- FALSE
+## keep[Chr=="chrM"] <- FALSE
+## table(keep)
+## yall <- yall[keep,, keep.lib.sizes=FALSE]
+## ChrNames <- paste0("chr",c(1:19,"X"))
+## ChrNames
+## yall$genes$Chr <- factor(yall$genes$Chr, levels=ChrNames)
+## o <- order(yall$genes$Chr, yall$genes$Locus)
+## yall <- yall[o,]
+## TSS <- nearestTSS(yall$genes$Chr, yall$genes$Locus, species="Mm")
+## yall$genes$EntrezID <- TSS$gene_id
+## yall$genes$Symbol <- TSS$symbol
+## yall$genes$Strand <- TSS$strand
+## yall$genes$Distance <- TSS$distance
+## yall$genes$Width <- TSS$width
+## head(yall$genes)
+
+yall <- readBismark2DGE(files, sample.names=Sample)
+
+dim(yall)
+head(yall$counts)
+head(yall$genes)
+head(yall$samples)
+
+yall$samples$group <- factor(targets$Group)
+group <- factor(targets$Group)
+head(yall$samples)
+
+Methylation <- gl(2,1,ncol(yall), labels=c("Me","Un"))
+Coverage <- yall$counts[, Methylation=="Me"] + yall$counts[, Methylation=="Un"]
+head(Coverage)
+
+rowSums(Coverage)
+keep <- rowSums(Coverage >= 8) >= 74
+table(keep)
+y$samples
+y <- yall[keep,, keep.lib.sizes=FALSE]
+TotalLibSize <- y$samples$lib.size[Methylation=="Me"] + y$samples$lib.size[Methylation=="Un"]
+y$samples$lib.size <- rep(TotalLibSize, each=2)
+y$samples$group <- rep(group, each=2)
+y$samples
+head(y$samples)
+yall$samples
+
+Me <- y$counts[, Methylation=="Me"]
+Un <- y$counts[, Methylation=="Un"]
+M <- log2(Me + 2) - log2(Un + 2)
+colnames(M) <- group
+plotMDS(M)
+
+
+designSL <- model.matrix(~0+Group, data=targets)
+colnames(designSL) <- c("Groupcase", "Groupcontrol")
+
+designSL
+design <- modelMatrixMeth(designSL)
+design
+
+y <- estimateDisp(y, design, trend="none")
+y$common.dispersion
+y$prior.df
+fit <- glmFit(y, design)
+
+contrcan <- makeContrasts(LvsB=0.5*(Groupcase)-0.5*(Groupcontrol), levels=design)
+cann <- glmLRT(fit, contrast=contrcan)
+topTags(cann)
+topTags(cann, n = 210, sort.by = "PValue", p.value = 1)
+summary(decideTests(cann, adjust.method = "none"))
+
+plotMD(cann, adjust.method = "none", main="cannabis users verse controls(GLM negative binomial distribution)")
+
+
+###Correlation plots
+library(moonBook)
+
+a1<- read.csv("correlation.csv", header=TRUE)
+a1$Loci <-a1$Gene
+data=a1 
+library(ggplot2)
+library(ggpmisc)
+library(devtools)
+fit1=lm(a1$BSASdiff~a1$EPICdiff,data=a1)
+summary(fit1)
+fit2=lm(a1$BSASCase~a1$EPICCase,data=a1)
+summary(fit2)
+formula <- a1$BSASCase~a1$EPICCase
+
+fit3=lm(a1$BSASControl~a1$EPICControl,data=a1)
+summary(fit3)
+formula <- a1$BSASCase~a1$EPICCase
+
+####ggplot graphs clean version
+p1<-ggplot(a1, aes(x=BSASCase, y=EPICCase, color=Loci)) +geom_point(size=6)
+p1<- p1+ theme_classic()
+p1<- p1+ theme(text= element_text(size=20))
+p1<- p1+ geom_smooth(method = "lm", color="blue", se=FALSE)
+p1
+
+p2<- ggplot(a1, aes(x=BSASdiff, y=EPICdiff, color=Loci, text.default(size=16))) +geom_point(size=6)
+p2<- p2+ theme_classic()
+p2<- p2+ theme(text= element_text(size=20))
+p2<- p2+ geom_smooth(color="blue", se=FALSE)
+p2
+
+p3<- ggplot(a1, aes(x=BSASControl, y=EPICControl, color=Loci)) + geom_point(size=6) 
+p3<- p3+ theme_classic()
+p3 <- p3+ theme(text= element_text(size=20))
+p3<- p3+ geom_smooth(method = "lm", color="blue", se=FALSE)
+p3
+
+
+
+##Bland Altman plots
+library(blandr)
+a2<- read.csv("correlation4.csv", header=TRUE)
+a2
+
+BSAScase <- a2$BSAS
+BSASCaselog <- log10(BSAScase)
+EPICCase <- a2$EPIC  
+EPICCaselog <- log10(EPICCase)
+loci <- a2$Gene
+
+statistics.results <- blandr.statistics(BSASCaselog,EPICCaselog)
+blandr.output.text(BSASCaselog, EPICCaselog, sig.level=0.95)
+
+p7 <- blandr.plot.ggplot(statistics.results, method1name = "BSAS Case",method2name = "EPIC Case",
+                         plotTitle = "Bland-Altman plot of log10 means of Cases", ciDisplay = TRUE, ciShading = FALSE, normalLow = FALSE)
+p7 <- p7 + theme_bw() 
+p7 <- p7 +geom_point(size=7,shape=21, aes(fill=Loci), alpha=1)
+p7 <- p7+ theme(text= element_text(size=20))
+p7 <- p7 +geom_hline(yintercept=-0.008834682, colour="red", size=0.9)
+p7 <- p7 +geom_hline(yintercept=c(0.1106113,-0.1282807),color="blue",size=0.9)
+p7
+
+a3 <- read.csv("correlation5.csv", header=TRUE)
+a3
+
+BSASControl <- a3$BSAS
+BSASControllog <- log10(BSASControl)
+
+EPICControl <- a3$EPIC 
+EPICControllog <- log10(EPICControl)
+Loci <- a3$Gene
+
+statistics.results1 <- blandr.statistics(BSASControllog,EPICControllog)
+blandr.output.text(BSASControllog, EPICControllog, sig.level=0.95)
+
+p8 <- blandr.plot.ggplot(statistics.results1, method1name = "BSAS Control",
+                         method2name = "EPIC Control",
+                         plotTitle = "Bland-Altman plot of log10 means Controls", ciDisplay = TRUE, ciShading = FALSE, normalLow = FALSE)
+p8 <- p8 + theme_bw() 
+p8 <- p8 +geom_point(size=7,shape=21,aes(fill=Loci), alpha= 1)
+p8 <- p8 + theme(text= element_text(size=20))
+p8 <- p8 +geom_hline(yintercept=-0.02734245, colour="red", size=0.9)
+p8 <- p8 +geom_hline(yintercept=c(0.1113534,-0.1660383),color="blue",size=0.9)
+p8
